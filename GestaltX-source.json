@@ -1,0 +1,40 @@
+{
+  "apps": [
+    {
+      "name": "GestaltX",
+      "bundleID": "com.huami.gestultx",
+      "versions": [
+        {
+          "version": "1.0.7",
+          "url": "https://github.com/huamidev/GestaltX/releases/download/v1.0.7/GestaltX_1.0.7.ipa",
+          "date": "2026-11-12"
+        },
+        {
+          "version": "1.0.5",
+          "url": "https://github.com/huamidev/GestaltX/releases/download/v1.0.5/GestaltX_1.0.5.ipa",
+          "date": "2026-11-11"
+        },
+        {
+          "version": "1.0.4",
+          "url": "https://github.com/huamidev/GestaltX/releases/download/v1.0.4/GestaltX_1.0.4.ipa",
+          "date": "2026-11-10"
+        },
+        {
+          "version": "1.0.3",
+          "url": "https://github.com/huamidev/GestaltX/releases/download/v1.0.3/GestaltX_1.0.3.ipa",
+          "date": "2026-11-09"
+        },
+        {
+          "version": "1.0.2",
+          "url": "https://github.com/huamidev/GestaltX/releases/download/v1.0.2/GestaltX_1.0.2.ipa",
+          "date": "2026-11-09"
+        },
+        {
+          "version": "1.0.1",
+          "url": "https://github.com/huamidev/GestaltX/releases/download/v1.0.1/GestaltX_1.0.1.ipa",
+          "date": "2026-11-09"
+        }
+      ]
+    }
+  ]
+}
