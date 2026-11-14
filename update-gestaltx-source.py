@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
-"""Regenerate GestaltX-source.json for SideStore, newest releases first.
+"""Regenerate the SideStore source catalog for GestaltX.
+
+The JSON format is NOT the AltStore-style {"apps":[...]} wrapper. SideStore
+decodes the file straight into its `Source` CoreData entity
+(AltStore/Core/Model/Source.swift -> init(from:)), so the schema is:
+
+    Source   (root)      : name REQUIRED, version?, subtitle?, websiteURL?,
+                            localizedDescription?, iconURL?, headerImageURL?,
+                            patreonURL?, tintColor?, userInfo?, groupID?,
+                            featuredApps?, news?, apps?
+    StoreApp (in "apps") : name REQUIRED, bundleIdentifier REQUIRED,
+                            developerName REQUIRED, localizedDescription REQUIRED,
+                            iconURL REQUIRED, versions[...],
+                            subtitle?, marketplaceID?, tintColor?, category?
+    AppVersion           : version REQUIRED, date REQUIRED, downloadURL REQUIRED,
+                            size REQUIRED, buildVersion?, sha256?,
+                            localizedDescription?, minOSVersion?, maxOSVersion?
+
+Note: "bundleIdentifier" (not "bundleID") and "downloadURL" (not "url"),
+and "size" is mandatory.
 
 Why tags and not only releases:
     Upstream sometimes tags a version and writes its changelog BEFORE the IPA
-    asset is uploaded (v1.0.6 and v1.0.8 both did this). The releases API then
-    does not list the version at all, so a releases-only updater would miss it.
-    We therefore walk the tag list and probe the canonical download URL with a
-    HEAD request - the version becomes available the moment its IPA is uploaded,
-    even if the release object has not been published yet.
-
-Output is the SideStore "source" JSON schema:
-
-    { "apps": [ { "name": ..., "bundleID": ..., "versions": [ {version,url,date} ] } ] }
-
-SideStore polls this file, sees a newer version of an installed app, and
-re-signs + installs it by itself.
+    asset is uploaded (v1.0.6 / v1.0.8 / v1.0.9 all did this). We therefore
+    walk the tag list AND the release list, then probe the real asset URL.
 
 Usage:  python update-gestaltx-source.py
 """
@@ -29,7 +38,12 @@ import urllib.request
 REPO = "huamidev/GestaltX"
 API = f"https://api.github.com/repos/{REPO}"
 BUNDLE_ID = "com.huami.gestultx"
+APP_NAME = "GestaltX"
+DEVELOPER = "huamidev"
+DESCRIPTION = "GestaltX - on-device MobileGestalt editing"
+ICON_URL = "https://github.com/huamidev.png"
 MAX_VERSIONS = 10
+
 UA = {"User-Agent": "sidestore-gestaltx-source-updater"}
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -53,12 +67,11 @@ def version_key(ver):
 
 
 def probe(url, attempts=3, pause=2.0):
-    """HEAD the direct download URL.
+    """HEAD a URL.
 
-    Returns:
-        (length, None)  -> asset is live
-        (None, "404")   -> asset genuinely not published yet
-        (None, reason)  -> transient / unknown error, must NOT be treated as "absent"
+    Returns (length, None)      -> live
+            (None, "404")       -> genuinely absent
+            (None, reason)      -> transient error, must NOT be treated as absent
     """
     last = "unknown"
     for attempt in range(1, attempts + 1):
@@ -78,15 +91,37 @@ def probe(url, attempts=3, pause=2.0):
     return None, last
 
 
+def validate(catalog):
+    """Fail loudly if the catalog does not match what SideStore can decode."""
+    assert catalog.get("name"), "root 'name' is required by SideStore"
+    apps = catalog.get("apps")
+    assert isinstance(apps, list) and apps, "'apps' must be a non-empty array"
+    for app in apps:
+        for key in ("name", "bundleIdentifier", "developerName",
+                    "localizedDescription", "iconURL"):
+            assert app.get(key), f"app '{app.get('bundleIdentifier')}' missing '{key}'"
+        assert isinstance(app.get("versions"), list) and app["versions"], \
+            f"app '{app['bundleIdentifier']}' needs a non-empty 'versions' array"
+        for v in app["versions"]:
+            for key in ("version", "date", "downloadURL", "size"):
+                assert v.get(key) not in (None, ""), \
+                    f"version {v.get('version')} missing '{key}'"
+            assert isinstance(v["size"], int), f"version {v['version']} size must be an int"
+            assert v["downloadURL"].startswith("http"), \
+                f"version {v['version']} downloadURL must be http(s)"
+    return True
+
+
 def main():
     print(f"reading tags from {REPO} ...")
     tags = [t["name"].lstrip("vV") for t in get_json(f"{API}/tags")]
-    tags.sort(key=version_key, reverse=True)
 
-    print("reading release metadata ...")
+    print("reading releases ...")
     releases = {}
     try:
         for rel in get_json(f"{API}/releases"):
+            if rel.get("draft") or rel.get("prerelease"):
+                continue
             ver = (rel.get("tag_name") or "").lstrip("vV")
             ipa = None
             zip_asset = None
@@ -101,35 +136,42 @@ def main():
                 "ipa": ipa,
                 "zip": zip_asset,
             }
-    except Exception as exc:  # metadata is a nice-to-have, never fatal
+    except Exception as exc:
         print(f"  (release metadata unavailable: {exc})")
+
+    # union of tags and released versions, newest first
+    candidates = sorted(set(tags) | set(releases), key=version_key, reverse=True)
 
     versions = []
     unknown = []
     zip_only = []
-    for ver in tags:
+    for ver in candidates:
         meta = releases.get(ver, {})
-        canonical = f"https://github.com/{REPO}/releases/download/v{ver}/GestaltX_{ver}.ipa"
-
-        # Preferred: a real .ipa asset on the release (its URL may differ from the
-        # canonical one, e.g. when the release was re-uploaded).
         asset = meta.get("ipa")
-        url = asset["browser_download_url"] if asset else canonical
+        url = asset["browser_download_url"] if asset else \
+            f"https://github.com/{REPO}/releases/download/v{ver}/GestaltX_{ver}.ipa"
 
         size, reason = probe(url)
         if reason == "404":
             if meta.get("zip") and not meta.get("ipa"):
                 zip_only.append(ver)
-                print(f"  v{ver:7s} published as .zip only (no .ipa asset) - skipped for SideStore")
+                print(f"  v{ver:7s} published as .zip only - skipped (SideStore needs a direct .ipa)")
             else:
-                print(f"  v{ver:7s} IPA not published yet (or release withdrawn) - skipped")
+                print(f"  v{ver:7s} no IPA published yet (or release withdrawn) - skipped")
             continue
         if reason is not None:
             unknown.append((ver, reason))
-            print(f"  v{ver:7s} probe inconclusive ({reason}) - skipped, will retry next run")
+            print(f"  v{ver:7s} probe inconclusive ({reason}) - skipped, retried next run")
             continue
 
-        versions.append({"version": ver, "url": url, "date": meta.get("date", "")})
+        versions.append({
+            "version": ver,
+            "date": meta.get("date", ""),
+            "downloadURL": url,
+            "size": size,
+            **({"sha256": (asset.get("digest") or "").replace("sha256:", "").strip()}
+               if asset and asset.get("digest") else {}),
+        })
         print(f"  v{ver:7s} available ({size} bytes)")
         if len(versions) >= MAX_VERSIONS:
             break
@@ -137,23 +179,38 @@ def main():
     if not versions:
         raise SystemExit("no downloadable GestaltX IPA found - refusing to write an empty catalog")
 
-    catalog = {"apps": [{"name": "GestaltX", "bundleID": BUNDLE_ID, "versions": versions}]}
+    catalog = {
+        "name": "GestaltX",
+        "version": 1,
+        "apps": [
+            {
+                "name": APP_NAME,
+                "bundleIdentifier": BUNDLE_ID,
+                "developerName": DEVELOPER,
+                "localizedDescription": DESCRIPTION,
+                "iconURL": ICON_URL,
+                "versions": versions,
+            }
+        ],
+    }
+
+    validate(catalog)
+
     with open(OUT, "w", encoding="utf-8") as f:
         json.dump(catalog, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
     print(f"\nwrote {OUT}")
-    print(f"{len(versions)} version(s); newest = {versions[0]['version']}")
+    print(f"{len(versions)} version(s); newest = {versions[0]['version']}  (schema validated)")
     if zip_only:
-        print("note: zip-only upstream (SideStore needs a direct .ipa) -> " + ", ".join(zip_only))
+        print("note: zip-only upstream -> " + ", ".join(zip_only))
     if unknown:
         print("note: inconclusive probes -> " + ", ".join(f"v{v}({r})" for v, r in unknown))
-        print("      (those versions may already be published; the next run will pick them up)")
 
 
 if __name__ == "__main__":
-    # Keep the console's own code page (936 on zh-CN); this script prints ASCII
-    # only, but the workflow log must never explode on encoding.
+    # Keep the console's own code page (936 on zh-CN); the workflow log must
+    # never explode on encoding.
     try:
         sys.stdout.reconfigure(errors="replace")
     except Exception:
