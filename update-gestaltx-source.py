@@ -196,7 +196,7 @@ def main():
 
     validate(catalog)
 
-    with open(OUT, "w", encoding="utf-8") as f:
+    with open(OUT, "w", encoding="utf-8", newline="\n") as f:
         json.dump(catalog, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
