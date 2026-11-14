@@ -1,0 +1,48 @@
+name: Update GestaltX Source
+
+# Keeps GestaltX-source.json in sync with the upstream huamidev/GestaltX releases
+# so the SideStore source URL always advertises the newest IPA. SideStore polls
+# that URL on its own and re-signs/installs the update itself.
+on:
+  schedule:
+    - cron: "17 */6 * * *" # every 6 hours
+  workflow_dispatch: # manual trigger
+  push:
+    branches: [main]
+    paths:
+      - "update-gestaltx-source.py"
+      - "GestaltX-source.json"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-gestaltx-source
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Regenerate source catalog
+        run: python update-gestaltx-source.py
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add GestaltX-source.json
+          if git diff --staged --quiet; then
+            echo "no change - nothing to commit"
+          else
+            git commit -m "chore: sync GestaltX source catalog"
+            git push
+          fi
